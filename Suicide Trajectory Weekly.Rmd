@@ -1,0 +1,1107 @@
+---
+title: "Severe Depression"
+author: "Benjamin W Nelson"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+#Resources
+https://stats.idre.ucla.edu/r/faq/random-coefficient-poisson-models/
+https://glmmadmb.r-forge.r-project.org/
+https://rstudio-pubs-static.s3.amazonaws.com/33653_57fc7b8e5d484c909b615d8633c01d51.html
+https://cran.r-project.org/web/packages/glmmTMB/glmmTMB.pdf
+
+#Set Working Directory
+```{r}
+setwd("~/Desktop/Manuscripts/Suicide Trajectory")
+```
+
+# Load Packages_______________________________________
+```{r message=FALSE, warning=FALSE}
+library(tidyverse)
+library(tidyr)
+library(tidylog)
+library(ggplot2)
+library(dplyr)
+library(psych)
+library(lubridate)
+library(summarytools)
+library(styler)
+library(readr)
+library(janitor)
+library(pacman)
+
+library(corrplot)
+library(zoo)
+library(magrittr)
+library(readr)
+library(naniar)
+library(car)
+library(reshape2)
+library(jmv)
+library(sjPlot)
+library(sjstats)
+library(bigrquery)
+library(lme4) #for estimating multilevel models
+library(lmerTest) #for p-values added to lme4 output
+library(texreg) #for better outputs
+library(effects) #for visualizing multilevel model effects
+library(sjstats) #might have to manually add
+library(sjPlot) #Print results
+library(sjlabelled) #Allows for custom printed results
+library(sjmisc)
+library(r2mlm)
+library(merTools)
+library(emmeans)
+library(DHARMa) #model fit for mlm
+
+#Set options
+options(scipen = 999, digits = 3)
+```
+
+#Load Colors
+```{r}
+green1 <- "#67BF74"
+green2 <- "#B4ECC0"
+blue <- "#5DC0BD"
+red <- "#CF4C24"
+yellow <- "#F5C64E"
+
+colors <- c(green1, green2, blue, red, yellow)
+```
+
+
+#Pull Data
+#Redacting bigquery code
+```{r, eval = FALSE}
+
+```
+
+#Data Cleaning
+##Clean Demographics
+```{r}
+#Clean demo
+demo_cleaned1 <- demo %>% 
+  dplyr::select(userID,
+                programID,
+                sex,
+                location,
+                historyOfMajorTrauma,
+                completion,
+                programStartDate,
+                programEndDate,
+                age,
+                daysactive,
+                introvideoswatched,
+                lastWeekNbr,
+                initialOnsetDepressionEpisodeAge,
+                majorDepressionEpisodes,
+                psychiatricHospitalizations,
+                suicideAttempts,
+                medicationnew,
+                meditationminutes,
+                averagesdaysmessagessentperweek)
+
+duplicated_demo_cleaned1 <- duplicated(demo_cleaned1[,c("userID", "programStartDate")])
+freq(duplicated_demo_cleaned1)
+
+#Remove Duplicate IDs
+demo_cleaned2 <- demo_cleaned1 %>% 
+  distinct(userID, programStartDate, .keep_all = TRUE)
+```
+
+##PHQ Create Total Score for 8 Items
+```{r}
+#See if any items are missing.
+phq_data %>% 
+  naniar::vis_miss()
+
+#create dataframe of relevant variables that need to be summed
+phq_8 <- data.frame(phq_data$question1, phq_data$question2, phq_data$question3, phq_data$question4, phq_data$question5, phq_data$question6, phq_data$question7, phq_data$question8) 
+
+#No items are reverse scored
+phq8_keys <- make.keys(phq_8, list(phq_8 = c(1, 2, 3, 4, 5, 6, 7, 8))) 
+
+#Score and use median if missing data
+phq_8_scale <- scoreItems(phq8_keys, phq_8, totals = TRUE, impute = "median")
+
+#Save the scores back into the dataset
+phq_data$phq8_total <- phq_8_scale[["scores"]]
+```
+
+##Merge PHQ and GAD
+```{r}
+phq_gad1 <- left_join(phq_data, gad_data, by = c("userID", "score_week", "date"))
+```
+
+###Only Keep Weeks 0 - 12 and 1, 3, 6, and 12 month followup
+```{r}
+#Any data collected up to 4 weeks before baseline, include as baseline
+phq_gad1$score_week <- ifelse(phq_gad1$score_week >= -4 & phq_gad1$score_week <= 0, 0, as.numeric(phq_gad1$score_week))
+
+#Recode Weeks 21-29 as 3 Month
+phq_gad1$score_week <- ifelse(phq_gad1$score_week >= 21 & phq_gad1$score_week <= 29, 25, as.numeric(phq_gad1$score_week))
+
+#Recode Weeks 32-44 as 6 Month
+phq_gad1$score_week <- ifelse(phq_gad1$score_week >= 32 & phq_gad1$score_week <= 44, 38, as.numeric(phq_gad1$score_week))
+
+#Recode Weeks 54-74 as 12 Month
+phq_gad1$score_week <- ifelse(phq_gad1$score_week >= 54 & phq_gad1$score_week <= 74, 64, as.numeric(phq_gad1$score_week))
+
+
+#phq_gad1$score_week[phq_gad1$score_week >= -4 & phq_gad1$score_week <= 0] <- 0
+
+phq_gad2 <- phq_gad1 %>% 
+  dplyr::filter(score_week == "0" | 
+                  score_week == "1" | 
+                  score_week =="2" | 
+                  score_week == "3" | 
+                  score_week =="4" | 
+                  score_week == "5" | 
+                  score_week =="6" | 
+                  score_week == "7" | 
+                  score_week =="8" | 
+                  score_week == "9" | 
+                  score_week =="10" | 
+                  score_week == "11" | 
+                  score_week == "12" | 
+                  score_week == "13" |
+                  score_week == "25" |
+                  score_week == "38" |
+                  score_week == "64") 
+
+#Check Frequency of Week
+summarytools::freq(phq_gad2$score_week)
+
+#Recode Odd Weeks to Previous Even Week
+phq_gad2$score_week[phq_gad2$score_week == 1] <- 2
+phq_gad2$score_week[phq_gad2$score_week == 3] <- 2
+phq_gad2$score_week[phq_gad2$score_week == 5] <- 4
+phq_gad2$score_week[phq_gad2$score_week == 7] <- 6
+phq_gad2$score_week[phq_gad2$score_week == 9] <- 8
+phq_gad2$score_week[phq_gad2$score_week == 11] <- 10
+phq_gad2$score_week[phq_gad2$score_week == 13] <- 12
+
+#Check Frequency of Week
+freq(phq_gad2$score_week)
+```
+
+###Check for PHQ and GAD Duplicates
+```{r}
+duplicated_phq_gad2 <- duplicated(phq_gad2[,c("userID", "score_week", "date")])
+freq(duplicated_phq_gad2)
+
+#Average Duplicate PHQ and GAD scores within the same week
+phq_gad3 <- dplyr::summarize(dplyr::group_by(phq_gad2, userID, score_week, date),
+                 phq_total_cleaned = mean(phqscore_overall, na.rm = TRUE),
+                 gad_total_cleaned = mean(gadscore_overall, na.rm = TRUE),
+                 phq_item9_cleaned = mean(question9, na.rm = TRUE),
+                 phq_8_total = mean(phq8_total, na.rm = TRUE))
+
+phq_gad_cleaned_duplicated <- duplicated(phq_gad3[,c("userID", "score_week", "date")])
+freq(phq_gad_cleaned_duplicated)
+```
+
+###Add missing treatment weeks to each participant
+```{r}
+phq_gad3$date_numeric <- format(as.Date(phq_gad3$date, format="%d/%m/%Y"),"%Y")
+phq_gad3$date_numeric <- as.numeric(phq_gad3$date_numeric)
+
+phq_gad4 <- phq_gad3 %>% 
+  tidyr::complete(userID, score_week = c(0, 2, 4, 6, 8, 10, 12, 25, 38))
+
+duplicated_phq_gad4 <- duplicated(phq_gad4[,c("userID", "score_week", "date")])
+freq(duplicated_phq_gad4)
+
+phq_gad5 <- phq_gad4 %>% 
+  distinct(userID, score_week, .keep_all = TRUE)
+```
+
+###Remove NaN
+```{r}
+phq_gad5$gad_total_cleaned[phq_gad5$gad_total_cleaned == "NaN"] <- NA
+phq_gad5$phq_total_cleaned[phq_gad5$phq_total_cleaned == "NaN"] <- NA
+```
+
+##Clean Weekly Data
+```{r}
+weekly_data_long <- weekly_data %>% 
+  pivot_longer(cols = c(-userID), names_sep="_(?=[^_]+$)", names_to = c(".value", "wave"))
+
+weekly_data_long <- weekly_data_long %>% 
+  rename(score_week = wave,
+         daysactive_weekly = daysactive,
+         messagessent_weekly = messagessent,
+         hrvminutes_weekly = hrvminutes,
+         meditationminutes_weekly = meditationminutes)
+
+weekly_data_long$score_week <- as.numeric(weekly_data_long$score_week)
+```
+
+##Merge Data
+```{r}
+data1 <- left_join(phq_gad5, demo_cleaned2, by = "userID")
+
+data1 <- left_join(data1, weekly_data_long, by = c("userID", "score_week"))
+
+duplicated_data1 <- duplicated(data1[,c("userID", "score_week", "date")])
+freq(duplicated_data1) #no duplicate
+```
+
+##Select Variables
+```{r}
+data2 <- data1 %>% 
+  dplyr::select(userID,
+                programID,
+                sex,
+                location,
+                historyOfMajorTrauma,
+                completion,
+                programStartDate,
+                programEndDate,
+                date,
+                date_numeric,
+                medicationnew,
+                score_week,
+                age,
+                daysactive_weekly,
+                introvideoswatched,
+                lastWeekNbr,
+                initialOnsetDepressionEpisodeAge,
+                majorDepressionEpisodes,
+                psychiatricHospitalizations,
+                suicideAttempts,
+                meditationminutes_weekly,
+                hrvminutes_weekly,
+                messagessent_weekly,
+                phq_total_cleaned,
+                gad_total_cleaned,
+                phq_item9_cleaned,
+                phq_8_total
+                ) %>% 
+  dplyr::rename(phq_9_total = phq_total_cleaned,
+                gad_total = gad_total_cleaned,
+                phq_item9 = phq_item9_cleaned) %>% 
+  dplyr::filter(location == "US",
+                lastWeekNbr == "12",
+                programEndDate <= as.Date("2020-12-01")) #Finished the program at least 6 months ago (week 32-44). 6 months from 6/1/21
+```
+
+##Filter by 2020
+```{r}
+#Carry dates forward per subject
+data2$date_numeric <- format(as.Date(data2$programEndDate, format="%d/%m/%Y"),"%Y")
+data2$date_numeric <- as.numeric(data2$date_numeric)
+
+data2$date_numeric <- DescTools::LOCF(data2$date_numeric)
+
+data3 <- data2 %>% 
+  dplyr::filter(date_numeric == "2020" | date_numeric == "2021")
+
+duplicated_data3 <- duplicated(data3[,c("userID", "score_week", "date")])
+freq(duplicated_data3) #no duplicate data
+```
+
+##Check Structure
+```{r}
+str(data3)
+
+data3 <- as.data.frame(data3)
+
+#Make Variables Factor
+data3[,1:6] <- lapply(data3[,1:6], as.factor)
+
+#Make Variables Numeric
+data3[,12:27] <- lapply(data3[,12:27], as.numeric)
+```
+
+##Clean Age
+```{r}
+data3$age[data3$age <= -41] <- NA
+data3$age[data3$age <= 0] <- NA
+```
+
+##Recode Number of MDD to Single vs Recurrent
+```{r}
+data4 <- data3 %>%
+    mutate(mdd_episodes = case_when(
+      majorDepressionEpisodes == 0 ~ 0,
+      majorDepressionEpisodes == 1 ~ 1,
+       majorDepressionEpisodes >= 2 ~ 2))
+
+data4$mdd_episodes <- factor(data4$mdd_episodes,
+                                      levels = c(0, 1, 2),
+                                      labels = c("No Depression", "One MDD Episode", "Recurrent MDD"))
+```
+
+##Recode Number of Psychiatric Hospitalizations
+```{r}
+data5 <- data4 %>%
+    mutate(psych_hospitalization_hx = case_when(
+      psychiatricHospitalizations == 0 ~ 0,
+      psychiatricHospitalizations >= 1 ~ 1))
+
+data5$psych_hospitalization_hx <- factor(data5$psych_hospitalization_hx,
+                                      levels = c(0, 1),
+                                      labels = c("None", "Present"))
+```
+
+##Recode Number of Suicide Attempts
+```{r}
+data6 <- data5 %>%
+    mutate(suicide_attempt_hx = case_when(
+      suicideAttempts == 0 ~ 0,
+      suicideAttempts >= 1 ~ 1))
+
+data6$suicide_attempt_hx <- factor(data6$suicide_attempt_hx,
+                                      levels = c(0, 1),
+                                      labels = c("None", "Present"))
+```
+
+##Recode Medication to Yes or No
+```{r}
+#Recode so that no, No, and NA stay the same, but any other text gets 1
+data6$meds <- ifelse(data6$medicationnew %in% c('no', "No", "false", NA, ""), data6$medicationnew, 1)
+
+#Replace nos with 0
+data6$meds[which(data6$meds == "no")] <- 0
+data6$meds[which(data6$meds == "No")] <- 0
+data6$meds[which(data6$meds == "false")] <- 0
+
+
+data6$meds <- factor(data6$meds,
+                     levels = c(0, 1),
+                     labels = c("No Meds", "Meds"))
+```
+
+##Create Starting PHQ-9 Groups
+```{r}
+phq_baseline_sxs_group <- data6 %>%
+  dplyr::filter(score_week == 0) %>% 
+  dplyr::select(userID, score_week, phq_9_total) %>% 
+  mutate(sxs_severity = case_when(
+    phq_9_total <= 4 ~ 0,
+    phq_9_total >= 5 & phq_9_total <= 9 ~ 1,
+    phq_9_total >= 10 & phq_9_total <= 14 ~ 2,
+    phq_9_total >= 15 & phq_9_total <= 19 ~ 3,
+    phq_9_total >= 20 ~ 4))
+
+phq_baseline_sxs_group$sxs_severity <- factor(phq_baseline_sxs_group$sxs_severity,
+                                      levels = c(0, 1, 2, 3, 4),
+                                      labels = c("Minimal", "Mild", "Moderate", "Moderately Severe", "Severe"))
+
+phq_baseline_sxs_group <- phq_baseline_sxs_group %>% 
+  dplyr::select(-c(score_week, phq_9_total))
+
+
+data7 <- left_join(data6, phq_baseline_sxs_group, by = "userID")
+```
+
+##Create Starting PHQ-8 Groups
+```{r}
+phq8_baseline_sxs_group <- data7 %>%
+  dplyr::filter(score_week == 0) %>% 
+  dplyr::select(userID, score_week, phq_8_total) %>% 
+  mutate(phq8_sxs_severity = case_when(
+    phq_8_total <= 4 ~ 0,
+    phq_8_total >= 5 & phq_8_total <= 9 ~ 1,
+    phq_8_total >= 10 & phq_8_total <= 14 ~ 2,
+    phq_8_total >= 15 & phq_8_total <= 19 ~ 3,
+    phq_8_total >= 20 ~ 4))
+
+phq8_baseline_sxs_group$phq8_sxs_severity <- factor(phq8_baseline_sxs_group$phq8_sxs_severity,
+                                      levels = c(0, 1, 2, 3, 4),
+                                      labels = c("None", "Mild", "Moderate", "Moderately Severe", "Severe"))
+
+phq8_baseline_sxs_group <- phq8_baseline_sxs_group %>% 
+  dplyr::select(-c(score_week, phq_8_total))
+
+data8 <- left_join(data7, phq8_baseline_sxs_group, by = "userID")
+
+data8 <- data8 %>% 
+  dplyr::filter(score_week != 64)
+```
+
+#Check Missing Data
+```{r}
+#Overall missing data
+data_missing <- data8 %>% 
+  dplyr::select(userID,
+                completion,
+                sex,
+                score_week,
+                age,
+                historyOfMajorTrauma,
+                mdd_episodes,
+                psych_hospitalization_hx,
+                suicide_attempt_hx,
+                phq8_sxs_severity,
+                phq_8_total,
+                phq_item9,
+                meds,
+                meditationminutes_weekly,
+                messagessent_weekly,
+                hrvminutes_weekly,
+                introvideoswatched,
+                daysactive_weekly) 
+
+data_missing %>% 
+  naniar::vis_miss()
+
+#Combination of missing data
+data_missing %>% 
+  naniar::gg_miss_upset()
+
+#Count of missing data
+naniar::gg_miss_var(data_missing, score_week)
+naniar::gg_miss_var(data_missing, completion)
+
+#Examine missingness by variables
+ggplot(data = data_missing, aes(x = score_week, y = phq_item9)) +
+  naniar::geom_miss_point()
+
+#Distribution of missing data
+data_missing %>% 
+  naniar::bind_shadow() %>% 
+  ggplot(aes(x = score_week, fill = phq_item9_NA)) +
+  geom_density(alpha = 0.4)
+```
+
+##Check Missingness
+```{r}
+imputation_data <- data8 %>% 
+  dplyr::select(userID,
+                completion,
+                sex,
+                age,
+                historyOfMajorTrauma,
+                mdd_episodes,
+                psych_hospitalization_hx,
+                suicide_attempt_hx,
+                phq8_sxs_severity,
+                phq_8_total,
+                gad_total,
+                phq_item9,
+                meds,
+                meditationminutes_weekly,
+                messagessent_weekly,
+                hrvminutes_weekly,
+                introvideoswatched,
+                daysactive_weekly)
+
+imputation_data %>% 
+  naniar::mcar_test()
+
+imputation_data$userID <- as.integer(imputation_data$userID)
+```
+
+##Imputation
+```{r}
+set.seed(123)
+
+all_imputations <- mice::mice(imputation_data, maxit= 10, m = 10) #MaxNWts = 2000
+
+merged_imputations <- sjmisc::merge_imputations(
+  imputation_data,
+  all_imputations,
+  ori = data8,
+  summary = c("none", "dens", "hist", "sd"),
+  filter = NULL
+)
+```
+
+##Create New Variables
+```{r}
+#Proportion of Videos Watched
+merged_imputations$intro_vid_imp_prop <- merged_imputations$introvideoswatched_imp/12
+```
+
+##Select Final Variables
+```{r}
+final_imputations <- merged_imputations %>% 
+  dplyr::select(userID,
+                completion,
+                score_week,
+                sex_imp,
+                age_imp,
+                historyOfMajorTrauma_imp,
+                phq8_sxs_severity_imp,
+                mdd_episodes_imp,
+                psych_hospitalization_hx_imp,
+                suicide_attempt_hx_imp,
+                meds_imp,
+                phq_8_total_imp,
+                phq_item9_imp,
+                meditationminutes_weekly_imp,
+                messagessent_weekly_imp,
+                hrvminutes_weekly_imp,
+                daysactive_weekly_imp,
+                intro_vid_imp_prop)
+
+final_imputations %>% 
+  naniar::vis_miss()
+
+str(final_imputations)
+```
+
+#Descriptives
+```{r}
+psych::describeBy(final_imputations)
+```
+
+#Plot PHQ Across Treatment
+```{r}
+figure_data <- final_imputations %>% 
+  dplyr::select(userID,
+                score_week,
+                phq8_sxs_severity_imp,
+                phq_item9_imp)
+
+figure_data <- na.omit(figure_data)
+
+figure_data$userID <- as.factor(figure_data$userID)
+
+figure_data$phq8_sxs_severity <- factor(figure_data$phq8_sxs_severity, levels = c("None", "Mild", "Moderate", "Moderately Severe", "Severe"))
+levels(figure_data$phq8_sxs_severity)[levels(figure_data$phq8_sxs_severity) == "None"] <- "Less than Mild"
+
+
+#Figure 1
+phq_trajectory1 <- ggplot(data=subset(figure_data), aes(x = as.factor(score_week), y = phq_item9_imp, color = phq8_sxs_severity)) +
+  geom_line(aes(group = userID), alpha = .1) + #This fades the individual lines
+  geom_point(position=position_jitter(h=0.1, w=0.1), shape = 21, alpha = 0.5, size = 1) +
+  stat_summary(data=subset(figure_data), aes(group=phq8_sxs_severity), fun=mean, geom="smooth", size = 2) + 
+  theme(axis.ticks = element_line(colour = "black"), 
+    panel.grid.major = element_line(colour = "white"), 
+    panel.grid.minor = element_line(colour = "white"), 
+    axis.title = element_text(size = 10), 
+    axis.text = element_text(size = 10, colour = "black"), 
+    axis.text.x = element_text(colour = "black"), 
+    axis.text.y = element_text(colour = "black"), 
+    plot.title = element_text(size = 10), 
+    legend.text = element_text(size = 10), 
+    legend.title = element_text(size = 10), 
+    panel.background = element_rect(fill = "white"), 
+    legend.key = element_rect(fill = "white"), 
+    legend.background = element_rect(fill = "white")) +
+  labs(title = "PHQ-9 Trajectory Across Treatment", x = "Treatment Week", y = "PHQ-9 9th Item", colour = "Symptom Severity") + 
+  scale_color_manual(values = c("Severe" = "#CF4C24", "Moderately Severe" = "#32A3A1", "Moderate" = "#67BF74", "Mild" = "#5DC0BD", "Less than Mild" = "#F5C64E"))
+
+phq_trajectory1
+```
+
+#Distributions
+```{r}
+boxplot(final_imputations$meditationminutes_weekly)
+describe(final_imputations$meditationminutes)
+meditation_min_ul <- 20.5 + (31.1*3)
+meditation_min_ll <- 20.5 - (31.1*3)
+
+boxplot(final_imputations$messagessent_weekly_imp)
+describe(final_imputations$messagessent_weekly_imp)
+message_ul <- 2.39 + (3.65*3)
+message_ll <- 2.39 - (3.65*3)
+
+boxplot(final_imputations$hrvminutes_weekly_imp)
+describe(final_imputations$hrvminutes_weekly_imp)
+hrv_ul <- 14.8 + (30*3)
+hrv_ll <- 14.8 - (30*3)
+```
+
+##Winsorize
+###Days Active
+```{r}
+final_imputations$meditationminutes_weekly_win <- DescTools::Winsorize(final_imputations$meditationminutes_weekly,
+                                                                minval = meditation_min_ll,
+                                                                maxval = meditation_min_ul)
+boxplot(final_imputations$meditationminutes_weekly_win)
+
+final_imputations$messagessent_weekly_imp_win <- DescTools::Winsorize(final_imputations$messagessent_weekly_imp,
+                                                                              minval = message_ll,
+                                                                              maxval = message_ul)
+boxplot(final_imputations$messagessent_weekly_imp_win)
+
+final_imputations$hrvminutes_weekly_imp_win <- DescTools::Winsorize(final_imputations$hrvminutes_weekly_imp,
+                                                                minval = hrv_ll,
+                                                                maxval = hrv_ul)
+boxplot(final_imputations$hrvminutes_weekly_imp_win)
+```
+
+##Remove Week 64
+```{r}
+final_imputations <- final_imputations %>% 
+  dplyr::filter(score_week != 64)
+```
+
+#Analyses
+
+##Number of Subjects
+```{r}
+n_distinct(final_imputations$userID) #778 Participants
+
+length(unique(final_imputations$userID)) #778 Participants
+
+number_of_subjects <- final_imputations %>% 
+  dplyr::filter(score_week == 0)
+
+n_distinct(number_of_subjects$userID)
+```
+
+##Completed vs Dropout
+```{r}
+final_imputations %>% 
+  dplyr::filter(score_week == 0) %>% 
+  freq(completion)
+
+completion_data <- final_imputations %>% 
+  dplyr::filter(score_week == 0) %>% 
+  filter(!is.na(completion)) %>% #Remove any missing
+  filter(!is.na(sxs_severity)) %>% #Remove any missing
+  group_by(sxs_severity) %>% #Group by parenting variable
+  count(completion) %>% #create sum variable for each survey response
+  mutate(percent = (n / sum(n)))
+
+ggplot(completion_data, aes(fill=completion, y=percent, x=sxs_severity)) + 
+  geom_bar(position="dodge", stat="identity") +
+  ggtitle("Completion by Baseline Sxs Severity") +
+  labs(x = NULL, y = NULL, fill = "Completion") +
+  geom_text(aes(label = n), vjust = -.2, position = position_dodge(width = 1)) +
+  scale_y_continuous(labels=scales::percent) + theme(panel.background = element_rect(fill = "white"))
+```
+
+##Descriptives
+```{r}
+descriptives_data <- final_imputations %>% 
+  dplyr::filter(score_week == 0)
+
+descriptives_data <- as.data.frame(descriptives_data)
+```
+
+###Symptom Severity
+```{r}
+freq(descriptives_data$phq8_sxs_severity_imp)
+```
+
+###PHQ Item 9 Distribution
+```{r}
+describe(final_imputations$phq_item9_imp)
+```
+
+
+###Table 1- Demographics
+####Age
+```{r}
+describe(descriptives_data$age_imp)
+```
+
+####Sex
+```{r}
+freq(descriptives_data$sex_imp)
+```
+
+####Baseline PHQ-8
+```{r}
+describe(descriptives_data$phq_8_total_imp)
+
+describeBy(descriptives_data$phq_8_total_imp, group = descriptives_data$phq8_sxs_severity_imp)
+```
+
+####Lifetime MDD Episodes
+```{r}
+freq(descriptives_data$mdd_episodes_imp)
+```
+
+####Meds
+```{r}
+freq(descriptives_data$meds_imp)
+```
+
+####Lifetime Suicide Attempt
+```{r}
+freq(descriptives_data$suicide_attempt_hx_imp)
+```
+
+####Lifetime Psychiatric Hospitalization
+```{r}
+freq(descriptives_data$psych_hospitalization_hx_imp)
+```
+
+####Lifetime History of Major Traumatic Event Exposure
+```{r}
+freq(descriptives_data$historyOfMajorTrauma_imp)
+```
+
+###Table 2. PHQ Item 9 Outcome Characteristics
+####Frequency Pre and Post
+```{r}
+#Baseline
+final_imputations %>% 
+  dplyr::filter(score_week == 0) %>% 
+                  freq(phq_item9_imp)
+
+#End of Treatment
+final_imputations %>% 
+  dplyr::filter(score_week == 12) %>% 
+                  freq(phq_item9_imp)
+
+#3 Month Follow Up
+final_imputations %>% 
+  dplyr::filter(score_week == 25) %>% 
+                  freq(phq_item9_imp)
+
+#6 Month Follow Up
+final_imputations %>% 
+  dplyr::filter(score_week == 38) %>% 
+                  freq(phq_item9_imp)
+```
+
+
+####Pre Post PHQ Change Effect Size
+Hedges' g provides a bias correction to Cohen's d for small sample sizes. For sample sizes > 20, the results for both statistics are roughly equivalent. 
+
+#####Overall Effect Size
+```{r}
+pre_post_data <- final_imputations %>% 
+  dplyr::select(userID,
+                score_week,
+                phq_item9_imp) %>% 
+  dplyr::filter(score_week == 0 | score_week == 12 | score_week == 25 | score_week == 38)
+
+freq(pre_post_data$score_week)
+
+#pre_post_data <- pre_post_data[-777,]
+
+
+pre_post_data$score_week[pre_post_data$score_week == 0] <- "Baseline"
+pre_post_data$score_week[pre_post_data$score_week == 12] <- "End of Treatment"
+pre_post_data$score_week[pre_post_data$score_week == 25] <- "3 Month Follow-Up"
+pre_post_data$score_week[pre_post_data$score_week == 38] <- "6 Month Follow-Up"
+pre_post_data$score_week <- as.factor(pre_post_data$score_week)
+
+pre_post_data$score_week <- factor(pre_post_data$score_week, levels = c("Baseline", "End of Treatment", "3 Month Follow-Up", "6 Month Follow-Up"))
+
+describeBy(pre_post_data$phq_item9_imp, group = pre_post_data$score_week)
+
+set.seed(123)
+
+ggstatsplot::ggwithinstats(
+  data = pre_post_data,
+  x = score_week,
+  y = phq_item9_imp,
+  xlab = "Treatment Week",
+  ylab = "Suicidal Ideation")
+
+#Pre-Post Effect Size
+pre_post_12_data <- pre_post_data %>% 
+  dplyr::filter(score_week == "Baseline" | score_week == "End of Treatment")
+
+effectsize::hedges_g(phq_item9_imp ~ score_week,
+  data = pre_post_12_data,
+  pooled_sd = TRUE,
+  paired = TRUE,
+  ci = 0.95)
+
+#3 Month
+pre_post_3mo_data <- pre_post_data %>% 
+  dplyr::filter(score_week == "Baseline" | score_week == "3 Month Follow-Up")
+
+effectsize::hedges_g(phq_item9_imp ~ score_week,
+  data = pre_post_3mo_data,
+  pooled_sd = TRUE,
+  paired = TRUE,
+  ci = 0.95)
+
+#6 Month
+pre_post_6mo_data <- pre_post_data %>% 
+  dplyr::filter(score_week == "Baseline" | score_week == "6 Month Follow-Up")
+
+effectsize::hedges_g(phq_item9_imp ~ score_week,
+  data = pre_post_6mo_data,
+  pooled_sd = TRUE,
+  paired = TRUE,
+  ci = 0.95)
+```
+
+#####Overall Effect Size Skewed
+```{r}
+set.seed(123)
+
+ggstatsplot::ggwithinstats(
+  data = pre_post_data,
+  x = score_week,
+  y = phq_item9_imp,
+  xlab = "Treatment Week",
+  ylab = "Suicidal Ideation",
+  type = "nonparametric")
+
+stats::friedman.test(phq_item9_imp ~ score_week | userID,
+                     data = pre_post_data)
+
+#Pre to Post
+rstatix::wilcox_test(phq_item9_imp ~ score_week,
+                        data = pre_post_12_data,
+                        paired = TRUE)
+
+rstatix::wilcox_effsize(phq_item9_imp ~ score_week,
+                        data = pre_post_12_data,
+                        paired = TRUE,
+                        ci = TRUE,
+                        ref.group = "Baseline")
+
+ggstatsplot::ggwithinstats(
+  data = pre_post_12_data,
+  x = score_week,
+  y = phq_item9_imp,
+  xlab = "Treatment Week",
+  ylab = "Suicidal Ideation",
+  type = "nonparametric")
+
+#Pre to 3 Month
+pre_post_3mo_data <- final_imputations %>% 
+  dplyr::select(userID,
+                score_week,
+                phq_item9_imp) %>% 
+  dplyr::filter(score_week == 0 | score_week == 25)
+
+pre_post_3mo_data$score_week[pre_post_3mo_data$score_week == 0] <- "Baseline"
+pre_post_3mo_data$score_week[pre_post_3mo_data$score_week == 25] <- "3 Month Follow-Up"
+pre_post_data$score_week <- as.factor(pre_post_data$score_week)
+
+rstatix::wilcox_test(phq_item9_imp ~ score_week,
+                        data = pre_post_3mo_data,
+                        paired = TRUE)
+
+rstatix::wilcox_effsize(phq_item9_imp ~ score_week,
+                        data = pre_post_3mo_data,
+                        paired = TRUE,
+                        ci = TRUE,
+                        ref.group = "Baseline")
+
+ggstatsplot::ggwithinstats(
+  data = pre_post_3mo_data,
+  x = score_week,
+  y = phq_item9_imp,
+  xlab = "Treatment Week",
+  ylab = "Suicidal Ideation",
+  type = "nonparametric")
+
+#Pre to 6 Month
+pre_post_6mo_data <- final_imputations %>% 
+  dplyr::select(userID,
+                score_week,
+                phq_item9_imp) %>% 
+  dplyr::filter(score_week == 0 | score_week == 38)
+
+pre_post_3mo_data$score_week[pre_post_3mo_data$score_week == 0] <- "Baseline"
+pre_post_data$score_week[pre_post_data$score_week == 38] <- "6 Month Follow-Up"
+pre_post_data$score_week <- as.factor(pre_post_data$score_week)
+
+rstatix::wilcox_test(phq_item9_imp ~ score_week,
+                        data = pre_post_3mo_data,
+                        paired = TRUE)
+
+rstatix::wilcox_effsize(phq_item9_imp ~ score_week,
+                        data = pre_post_3mo_data,
+                        paired = TRUE,
+                        ci = TRUE,
+                        ref.group = "Baseline")
+
+ggstatsplot::ggwithinstats(
+  data = pre_post_6mo_data,
+  x = score_week,
+  y = phq_item9_imp,
+  xlab = "Treatment Week",
+  ylab = "Suicidal Ideation",
+  type = "nonparametric")
+```
+
+##Check PHQ Item 9 Dispursion
+```{r}
+describe(final_imputations$phq_item9_imp)
+hist(final_imputations$phq_item9_imp)
+boxplot(final_imputations$phq_item9_imp)
+freq(final_imputations$phq_item9_imp)
+```
+
+##Functions
+```{r}
+#Singular means you haven a variance component that is sitting on 0. It may or may not impact estimates. Should figure out if you threw something in the model that is not useful
+check_singularity <- function(lmerobj) {
+  tt <- getME(lmerobj,"theta") #RE estimates
+  ll <- getME(lmerobj,"lower") #lower bound on estimate
+  
+  #look for RE estimates that are very small (near zero) and the lower bound encompasses 0
+  low_re <- tt[ll==0 & tt < 1e-2]
+  return(low_re)
+}
+```
+
+#Create Final Dataset for Treatment Weeks
+```{r}
+final_imputations_treatment <- final_imputations %>% 
+  dplyr::filter(score_week != 25) %>% 
+  dplyr::filter(score_week != 38)
+```
+
+
+##MLM
+###Unconditional Model
+```{r}
+phq_model_unconditional <- lmer(phq_item9_imp ~ 1 + score_week + (1 + score_week | userID),
+                                data = final_imputations_treatment)
+
+summary(phq_model_unconditional)
+
+final_imputations_treatment$score_week <- as.numeric(final_imputations_treatment$score_week )
+```
+
+###Model 1: Linear
+```{r}
+phq_model_linear <- lmer(phq_item9_imp ~ 1 + score_week +
+                              sex_imp +
+                              age_imp +
+                              daysactive_weekly_imp +
+                              mdd_episodes_imp +
+                              psych_hospitalization_hx_imp +
+                              suicide_attempt_hx_imp +
+                              historyOfMajorTrauma_imp +
+                              phq8_sxs_severity_imp +
+                              meds_imp +
+                           (1 + score_week | userID),
+                           REML = TRUE,
+                           data = final_imputations_treatment)
+
+summary(phq_model_linear)
+performance::r2(phq_model_linear)
+performance::check_model(phq_model_linear)
+performance::icc(phq_model_linear)
+stats::AIC(phq_model_linear)
+stats::BIC(phq_model_linear)
+car::vif(phq_model_linear)
+#variance inflation factor (VIF) is the quotient of the variance in a model with multiple terms by the variance of a model with one term alone. It quantifies the severity of multicollinearity in an ordinary least squares regression analysis. It provides an index that measures how much the variance (the square of the estimate's standard deviation) of an estimated regression coefficient is increased because of collinearity
+
+#Individual Trajectories
+individual_trajectories <- lattice::xyplot(phq_item9_imp ~ score_week|userID,
+    data=final_imputations_treatment, type= c("p", "r"), #p is point and r is regression line
+    col.line = "black",
+    strip = FALSE,
+    xlab="Treatment Week", ylab="Suicidal Ideation")
+
+update(individual_trajectories, index.cond = function(x, y) coef(lm(y ~ x))[2])
+```
+
+##MLM Poisson
+
+###Unconditional Model
+```{r}
+phq_model_unconditional_pos <- glmer(phq_item9_imp ~ 1 + score_week +  (1 + score_week| userID), 
+                                family = poisson,
+                                data = final_imputations_treatment)
+
+summary(phq_model_unconditional_pos)
+performance::check_overdispersion(phq_model_unconditional_pos)
+```
+
+###Linear Model Poisson
+```{r}
+phq_model_poisson <- glmmTMB(phq_item9_imp ~ 1 + score_week +
+                               sex_imp +
+                               age_imp +
+                               daysactive_weekly_imp +
+                               mdd_episodes_imp +
+                               psych_hospitalization_hx_imp +
+                               suicide_attempt_hx_imp +
+                               historyOfMajorTrauma_imp +
+                               phq8_sxs_severity_imp +
+                               meds_imp +
+                               (1 + score_week | userID),
+                               data = final_imputations_treatment,
+                               family=poisson)
+
+summary(phq_model_poisson)
+performance::r2(phq_model_poisson)
+performance::check_model(phq_model_poisson)
+performance::icc(phq_model_poisson)
+stats::AIC(phq_model_poisson)
+stats::BIC(phq_model_poisson)
+
+#Alternative
+phq_model_poisson_alt <- glmer(phq_item9_imp ~ 1 + score_week +
+                                sex_imp +
+                                age_imp +
+                                mdd_episodes_imp + 
+                                psych_hospitalization_hx_imp +
+                                suicide_attempt_hx_imp +
+                                historyOfMajorTrauma_imp + 
+                                phq8_sxs_severity_imp + 
+                                meds_imp +
+                                (1 + score_week | userID),
+                                family = poisson,
+                                data = final_imputations_treatment)
+
+summary(phq_model_poisson_alt)
+stats::AIC(phq_model_poisson_alt)
+```
+
+##MLM Negative Binomial
+```{r}
+phq_model_nb <- glmer.nb(phq_item9_imp ~ 1 + score_week +
+                               sex_imp +
+                               age_imp +
+                               daysactive_weekly_imp +
+                               mdd_episodes_imp +
+                               psych_hospitalization_hx_imp +
+                               suicide_attempt_hx_imp +
+                               historyOfMajorTrauma_imp +
+                               phq8_sxs_severity_imp +
+                               meds_imp +
+                               (1 + score_week | userID),
+                               data = final_imputations_treatment,
+                         verbose=TRUE)
+
+phq_model_nb_alt <- glmmTMB(phq_item9_imp ~ 1 + score_week +
+                               sex_imp +
+                               age_imp +
+                               daysactive_weekly_imp +
+                               mdd_episodes_imp +
+                               psych_hospitalization_hx_imp +
+                               suicide_attempt_hx_imp +
+                               historyOfMajorTrauma_imp +
+                               phq8_sxs_severity_imp +
+                               meds_imp +
+                               (1 + score_week | userID),
+                               data = final_imputations_treatment,
+                                family=nbinom2,
+                        control = glmerControl(optimizer ="Nelder_Mead"))
+
+
+summary(phq_model_nb)
+performance::r2(phq_model_nb)
+performance::check_model(phq_model_nb)
+performance::icc(phq_model_nb)
+performance::performance_aic(phq_model_nb)
+stats::AIC(phq_model_nb)
+stats::BIC(phq_model_nb)
+```
+
+#Compare Model Fits
+```{r}
+anova(phq_model_linear, phq_model_poisson, phq_model_nb) #Same fit
+
+performance::compare_performance(phq_model_unconditional, phq_model_linear, phq_model_poisson, phq_model_nb, rank = TRUE)
+```
+
+#Print Tables
+```{r}
+tab_model(phq_model_linear, phq_model_poisson, phq_model_nb, 
+          dv.labels = c("Linear Model", "Poisson Model", "Negative Binomial Model"),
+          show.se = TRUE,
+          show.std = TRUE,
+          string.p = "P-Value",
+          digits = 3,
+          transform = NULL,
+          file = "~/Desktop/Manuscripts/Suicide Trajectory/Tables/phq item 9 model final.doc")
+```
+
+#Reduction in Attempts and Deaths
+See excel on Github
